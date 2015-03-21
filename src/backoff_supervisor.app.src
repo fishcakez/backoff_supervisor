@@ -1,0 +1,9 @@
+{application, backoff_supervisor,
+ [{description, "Backoff Supervisor"}
+ ,{vsn, "0.1.0"}
+ ,{registered, []}
+ ,{applications,
+    [kernel,stdlib]}
+ ,{env,[]}
+ ,{modules, []}
+ ]}.

@@ -1,0 +1,6 @@
+@title Backoff Supervisor
+@doc `backoff_supervisor' is a `simple_one_for_one' supervisor which
+automatically starts a single child after an initial delay. Start
+attempts are retried with increasing delay, up to a maximum.
+
+@see backoff_supervisor
