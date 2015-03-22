@@ -46,6 +46,8 @@ start_link({ok, Pid}) ->
     {ok, Child} = start_link(),
     Pid ! {started, self(), Child, now()},
     {ok, Child};
+start_link(ignore) ->
+    ignore;
 start_link({ignore, Pid}) ->
     Pid ! {ignored, self(), now()},
     ignore;

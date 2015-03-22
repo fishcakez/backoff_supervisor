@@ -20,7 +20,7 @@
 -module(backoff_supervisor_SUITE).
 
 -include_lib("common_test/include/ct.hrl").
--define(LONG_TIMEOUT, 10000).
+-define(LONG_TIMEOUT, 300000).
 
 %% common_test api
 
@@ -54,7 +54,6 @@
 -export([child_exit_temporary/1]).
 -export([child_exit_transient/1]).
 -export([child_exit_permanent/1]).
-
 -export([increasing_delay_normal/1]).
 -export([increasing_delay_jitter/1]).
 -export([start_after_delay/1]).
@@ -63,12 +62,17 @@
 -export([shutdown_brutal_kill/1]).
 -export([shutdown_timeout/1]).
 -export([shutdown_infinity/1]).
+-export([change_code_no_child/1]).
+-export([change_code_next_child/1]).
+-export([change_code_no_backoff/1]).
+-export([change_code_next_backoff/1]).
 
 %% common_test api
 
 all() ->
     [{group, simple_one_for_one},
-     {group, backoff}].
+     {group, backoff},
+     {group, sys}].
 
 suite() ->
     [{timetrap, {seconds, 120}}].
@@ -98,7 +102,11 @@ groups() ->
                             start_error,
                             shutdown_brutal_kill,
                             shutdown_timeout,
-                            shutdown_infinity]}].
+                            shutdown_infinity]},
+     {sys, [parallel], [change_code_no_child,
+                        change_code_next_child,
+                        change_code_no_backoff,
+                        change_code_next_backoff]}].
 
 init_per_suite(Config) ->
     _ = application:start(sasl),
@@ -116,10 +124,13 @@ init_per_group(_Group, Config) ->
 end_per_group(_Group, _Config) ->
     ok.
 
-init_per_testcase(_TestCase, Config) ->
-    Config.
+init_per_testcase(TestCase, Config) ->
+    application:unset_env(backoff_supervisor, TestCase),
+    [{env, TestCase} | Config].
 
-end_per_testcase(_TestCase, _Config) ->
+end_per_testcase(_TestCase, Config) ->
+    Env = ?config(env, Config),
+    application:unset_env(backoff_supervisor, Env),
     ok.
 
 %% test cases
@@ -700,6 +711,101 @@ shutdown_infinity(_) ->
 
     ok.
 
+change_code_no_child(Config) ->
+    Env = ?config(env, Config),
+    Spec1 = {ok, {{normal, ?LONG_TIMEOUT, ?LONG_TIMEOUT}, [supervisor()]}},
+    application:set_env(backoff_supervisor, Env, Spec1),
+    {ok, Sup} = backoff_supervisor_test:start_link({env, Env}),
+
+    ok = sys:suspend(Sup),
+    Spec2 = {ok, {{normal, ?LONG_TIMEOUT, ?LONG_TIMEOUT},
+                  [worker({info, self()}, transient, infinity, [module])]}},
+    application:set_env(backoff_supervisor, Env, Spec2),
+    ok = sys:change_code(Sup, ?MODULE, undefined, undefined),
+    ok = sys:resume(Sup),
+
+    Self = self(),
+    {ok, Pid, Self} = backoff_supervisor:start_child(Sup, []),
+
+    [{_, Pid, worker, [module]}] = backoff_supervisor:which_children(Sup),
+
+    ok = shutdown(Sup),
+
+    ok.
+
+change_code_next_child(Config) ->
+    Env = ?config(env, Config),
+    Spec1 = {ok, {{normal, ?LONG_TIMEOUT, ?LONG_TIMEOUT}, [supervisor()]}},
+    application:set_env(backoff_supervisor, Env, Spec1),
+    {ok, Sup} = backoff_supervisor_test:start_link({env, Env}),
+
+    {ok, Pid1} = backoff_supervisor:start_child(Sup, []),
+
+    ok = sys:suspend(Sup),
+    Spec2 = {ok, {{normal, ?LONG_TIMEOUT, ?LONG_TIMEOUT},
+                   [worker({info, self()}, transient, 1, [module])]}},
+    application:set_env(backoff_supervisor, Env, Spec2),
+    ok = sys:change_code(Sup, ?MODULE, undefined, undefined),
+    ok = sys:resume(Sup),
+
+    ok = backoff_supervisor:terminate_child(Sup, Pid1),
+    Self = self(),
+    {ok, Pid2, Self} = backoff_supervisor:start_child(Sup, []),
+    [{_, Pid2, worker, [module]}] = backoff_supervisor:which_children(Sup),
+
+    ok = shutdown(Sup),
+
+    ok.
+
+change_code_no_backoff(Config) ->
+    Env = ?config(env, Config),
+    Spec1 = {ok, {{normal, ?LONG_TIMEOUT, ?LONG_TIMEOUT}, [supervisor()]}},
+    application:set_env(backoff_supervisor, Env, Spec1),
+    {ok, Sup} = backoff_supervisor_test:start_link({env, Env}),
+
+    {ok, Pid1} = backoff_supervisor:start_child(Sup, []),
+
+    ok = sys:suspend(Sup),
+    Spec2 = {ok, {{normal, 1, 1}, [worker({ok, self()})]}},
+    application:set_env(backoff_supervisor, Env, Spec2),
+    ok = sys:change_code(Sup, ?MODULE, undefined, undefined),
+    ok = sys:resume(Sup),
+
+    ok = backoff_supervisor:terminate_child(Sup, Pid1),
+
+    receive {started, Sup, _, _} -> ok end,
+
+    ok = shutdown(Sup),
+
+    ok.
+
+change_code_next_backoff(Config) ->
+    Env = ?config(env, Config),
+    Spec1 = {ok, {{normal, 1, 1}, [worker(ignore)]}},
+    application:set_env(backoff_supervisor, Env, Spec1),
+    {ok, Sup} = backoff_supervisor_test:start_link({env, Env}),
+
+    ok = sys:suspend(Sup),
+    Spec2 = {ok, {{normal, ?LONG_TIMEOUT, ?LONG_TIMEOUT},
+                  [worker({ignore, self()})]}},
+    application:set_env(backoff_supervisor, Env, Spec2),
+    ok = sys:change_code(Sup, ?MODULE, undefined, undefined),
+    ok = sys:resume(Sup),
+
+    receive {ignored, Sup, _} -> ok end,
+
+    receive
+        {ignored, Sup, _} ->
+            exit({backoff_not_changed})
+    after
+        1000 ->
+            ok
+    end,
+
+    ok = shutdown(Sup),
+
+    ok.
+
 %% Internal
 
 supervisor() ->
@@ -721,6 +827,10 @@ worker(Args, Restart) ->
 worker(Args, Restart, Shutdown) ->
     {worker, {backoff_supervisor_worker, start_link, [Args]}, Restart,
      Shutdown, worker, dynamic}.
+
+worker(Args, Restart, Shutdown, Modules) ->
+    {worker, {backoff_supervisor_worker, start_link, [Args]}, Restart,
+     Shutdown, worker, Modules}.
 
 shutdown(Pid) ->
     Trap = process_flag(trap_exit, true),

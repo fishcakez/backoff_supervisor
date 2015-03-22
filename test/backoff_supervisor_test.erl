@@ -31,10 +31,13 @@
 
 %% public api
 
-start_link(Spec) ->
-    backoff_supervisor:start_link(?MODULE, Spec).
+start_link(Args) ->
+    backoff_supervisor:start_link(?MODULE, Args).
 
 %% supervisor api
 
+init({env, Env}) ->
+    {ok, Spec} = application:get_env(backoff_supervisor, Env),
+    Spec;
 init(Spec) ->
     Spec.
