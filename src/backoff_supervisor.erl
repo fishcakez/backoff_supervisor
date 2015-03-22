@@ -140,7 +140,7 @@
                 child_type :: worker | supervisor,
                 modules :: dynamic | [module()],
                 child :: undefined | pid(),
-                child_args :: undefined | list(),
+                child_mfargs :: undefined | {module(), atom(), list()},
                 start :: pos_integer(),
                 max :: pos_integer() | infinity,
                 backoff_type :: normal | jitter,
@@ -371,9 +371,9 @@ do_start_child(ExtraArgs, #state{mfargs={Mod, Fun, Args}} = State) ->
     NArgs = Args ++ ExtraArgs,
     case catch apply(Mod, Fun, NArgs) of
         {ok, Child} = OK when is_pid(Child) ->
-            {reply, OK, started(Child, NArgs, State)};
+            {reply, OK, started(Child, {Mod, Fun, NArgs}, State)};
         {ok, Child, _} = OK when is_pid(Child) ->
-            {reply, OK, started(Child, NArgs, State)};
+            {reply, OK, started(Child, {Mod, Fun, NArgs}, State)};
         ignore ->
             {reply, {ok, undefined}, fire(State)};
         {error, _} = Error ->
@@ -382,16 +382,16 @@ do_start_child(ExtraArgs, #state{mfargs={Mod, Fun, Args}} = State) ->
             {reply, {error, Reason}, fire(State)}
     end.
 
-started(Child, Args, #state{backoff=Backoff} = State) ->
+started(Child, MFA, #state{backoff=Backoff} = State) ->
     {_, NBackoff} = backoff:succeed(Backoff),
-    State#state{child=Child, child_args=Args, backoff=NBackoff}.
+    State#state{child=Child, child_mfargs=MFA, backoff=NBackoff}.
 
 fire(#state{backoff=Backoff} = State) ->
     State#state{backoff_ref=backoff:fire(Backoff)}.
 
 handle_terminate_child(Child, #state{child=Child} = State) when is_pid(Child) ->
     Reply = shutdown(State),
-    {reply, Reply, fire(State#state{child=undefined, child_args=undefined})};
+    {reply, Reply, fire(State#state{child=undefined, child_mfargs=undefined})};
 handle_terminate_child(Pid, State) when is_pid(Pid) ->
     case erlang:is_process_alive(Pid) of
         true ->
@@ -449,10 +449,12 @@ supervisor_report(Error, Reason, #state{name=Name} = State) ->
               {offender, child(State)}],
     error_logger:error_report(supervisor_report, Report).
 
-child(#state{child=Child, id=Id, mfargs={Mod, Fun, _}, child_args=Args,
+child(#state{child_mfargs=undefined, mfargs=MFA} = State) ->
+    child(State#state{child_mfargs=MFA});
+child(#state{child=Child, child_mfargs=MFA, id=Id,
              restart=Restart, shutdown=Shutdown, child_type=ChildType}) ->
-    [{pid, Child}, {name, Id}, {mfargs, {Mod, Fun, Args}},
-     {restart_type, Restart}, {shutdown, Shutdown}, {child_type, ChildType}].
+    [{pid, Child}, {name, Id}, {mfargs, MFA}, {restart_type, Restart},
+     {shutdown, Shutdown}, {child_type, ChildType}].
 
 handle_which_children(#state{child=Child, child_type=ChildType,
                              modules=Modules} = State) when is_pid(Child) ->
@@ -489,15 +491,15 @@ handle_timeout(BRef, #state{backoff_ref=BRef, mfargs={Mod, Fun, Args}} = State)
 handle_timeout(_, State) ->
     {noreply, State}.
 
-restarted(Child, #state{mfargs={_, _, Args}} = State) ->
-    {noreply, started(Child, Args, State)}.
+restarted(Child, #state{mfargs=MFA} = State) ->
+    {noreply, started(Child, MFA, State)}.
 
 backoff(#state{backoff=Backoff} = State) ->
     {_, NBackoff} = backoff:fail(Backoff),
     {noreply, fire(State#state{backoff=NBackoff})}.
 
-failed(Reason, #state{id=Id, mfargs={_, _, Args}} = State) ->
-    supervisor_report(start_error, Reason, State#state{child_args=Args}),
+failed(Reason, #state{id=Id, mfargs=MFA} = State) ->
+    supervisor_report(start_error, Reason, State#state{child_mfargs=MFA}),
     NReason = {shutdown, {failed_to_start_child, Id, Reason}},
     {stop, NReason, State}.
 
@@ -524,10 +526,10 @@ terminated_stop(Reason, #state{id=Id} = State) ->
     supervisor_report(child_terminated, Reason, State),
     supervisor_report(shutdown, reached_max_restart_intensity, State),
     NReason = {shutdown, {reached_max_restart_intensity, Id, Reason}},
-    {stop, NReason, State#state{child=undefined, child_args=undefined}}.
+    {stop, NReason, State#state{child=undefined, child_mfargs=undefined}}.
 
 terminated(State) ->
-    {noreply, fire(State#state{child=undefined, child_args=undefined})}.
+    {noreply, fire(State#state{child=undefined, child_mfargs=undefined})}.
 
 handle_code_change({_, _, _} = BackoffSpec, StartSpec, State) ->
     case check_backoff_spec(BackoffSpec) of
