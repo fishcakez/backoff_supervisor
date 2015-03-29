@@ -120,8 +120,8 @@
 
 -type backoff_supervisor() :: pid() | atom() | {global, any()} |
                               {via, module(), any()}.
--type backoff_spec() :: {normal | jitter, pos_integer(),
-                         pos_integer() | infinity}.
+-type backoff_spec() :: {normal | jitter | full_jitter | decorrelated_jitter,
+                         pos_integer(), pos_integer() | infinity}.
 
 -export_type([backoff_supervisor/0]).
 -export_type([backoff_spec/0]).
@@ -143,7 +143,7 @@
                 child_mfargs :: undefined | {module(), atom(), list()},
                 start :: pos_integer(),
                 max :: pos_integer() | infinity,
-                backoff_type :: normal | jitter,
+                backoff_type :: normal | jitter | full_jitter | decorrelated_jitter,
                 backoff :: backoff:backoff(),
                 backoff_ref :: undefined | reference()}).
 
@@ -344,7 +344,9 @@ do_init(_, _, _, _, StartSpec) ->
     {stop, {bad_start_spec, StartSpec}}.
 
 check_backoff_spec({BackoffType, _, _})
-  when not (BackoffType =:= normal orelse BackoffType =:= jitter) ->
+  when not (BackoffType =:= normal orelse BackoffType =:= jitter orelse
+            BackoffType =:= full_jitter orelse
+            BackoffType =:= decorrelated_jitter) ->
     {error, {invalid_type, BackoffType}};
 check_backoff_spec({_, Start, _})
   when not (is_integer(Start) andalso Start > 0 andalso Start =< ?TIMER_MAX) ->
